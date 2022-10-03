@@ -1,0 +1,367 @@
+---
+title: "Precision Recall Curve"
+author: "Catalina Zavala"
+date: "2022-10-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r pr curve}
+
+setwd("C:/Users/Winter's Shadow/Desktop/Rwork")
+
+library(psych)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(gridExtra)
+
+# Music Genre Data File
+# https://www.kaggle.com/datasets/vicsuperman/prediction-of-music-genre?select=music_genre.csv
+
+# Read in data file, take an initial look at data 
+music.dfo <-read.csv('music_genre.csv', header = TRUE, sep=',')
+
+str(music.dfo)
+head(music.dfo)
+
+
+# select variables of interest (.e.g potential features and classification)
+music.df <-subset(music.dfo, select=c("instance_id","popularity","acousticness",
+                          "danceability","duration_ms","energy",
+                          "instrumentalness", "key","liveness","loudness",
+                          "mode","speechiness","tempo","valence","music_genre"))
+
+######################  cleaning up data #################################
+
+#checking for missingness
+any(is.na(music.df))
+
+# checking tempo variable which read in as a character variable
+# though it seems tempo should be numeric
+table(music.df$tempo[is.na(as.integer(music.df$tempo))])
+
+#converting to numeric 
+music.df$tempo <- as.numeric(music.df$tempo) 
+
+#confirming tempo is now numeric 
+str(music.df)
+
+# setting negative 'duration' values to missing
+music.df$duration_ms[music.df$duration_ms == -1] <- NA
+
+# making a more concise id label 
+names(music.df)[names(music.df)=="instance_id"] <- "id"
+
+# counting number of missing variables per row
+music.df$count.na <- rowSums(is.na(music.df))
+
+psych::describe(music.df$count.na)
+
+# drop 5 rows missing on all variables 
+music.df <- subset(music.df, count.na != 12)
+
+# lots of missingness on duration_ms and tempo... delete or impute?
+# technically, song duration could probably be pulled from online sources 
+# but not sure about tempo 
+# This is a large data set, so will proceed with no imputations 
+music.miss <-subset(music.df, is.na(music.df$duration_ms) | 
+                      is.na(music.df$tempo))
+
+# how many are still missing on at least one variable?
+# 9,440 observations
+music.miss2 <-subset(music.miss, count.na > 0 )
+
+# turn music genre from character to factor
+music.miss2$music.genre.f <- as.factor(music.miss2$music_genre)   
+
+table(music.miss2$music.genre.f)
+# missingness doesn't seem to be tied with genre
+
+#remove some data frames 
+rm(music.miss)
+rm(music.miss2)
+
+# delete rows w/missing for now
+# the sample size is quite large, and since missingness is not tied to genre, 
+# don't necessarily need to spend time inputing values
+music.dfnm <-subset(music.df, count.na == 0)
+
+# Let's made a model that identifies classical music i.e. binary outcome
+# Creating variable: 1 = song classified as Classical music
+music.dfnm$genre <- ifelse(music.dfnm$music_genre == "Classical", "Classical", "Other")
+
+#saving class indicator as factor
+music.dfnm$genre <-as.factor(music.dfnm$genre)
+
+library(caret) # short for Classification And Regression Training
+
+# Setting a random seed so all results are reproducible
+set.seed(123) 
+
+#this is a fairly large sample, lets draw a random sample before moving forward
+
+# If the y argument to this function is a factor, 
+# the random sampling occurs within each class and should preserve the overall 
+# class distribution of the data.
+split.index <- caret::createDataPartition(music.dfnm$genre, p =.3, list = FALSE, times = 1)
+# new music sample 
+music.songs = music.dfnm[ split.index,]
+
+str(music.songs)
+
+#remove unnecessary, intermediate data frames
+rm(music.60min)
+rm(music.dfnm)
+rm(music.df)
+rm(music.dfo)
+rm(split.index)
+
+# convert milliseconds to minutes for plots
+music.songs$duration_min <- music.songs$duration_ms/60000
+
+# calculate average length of song
+mean(music.songs[["duration_min"]])
+
+#average length of song by genre 
+aggregate(duration_min ~ music_genre, music.songs, FUN = function(x){mean(x)})
+
+table(music.songs$genre) 
+
+psych::describe(music.songs[ ,c("popularity","acousticness",
+                        "danceability","duration_ms","energy",
+                        "instrumentalness","liveness","loudness",
+                        "speechiness","tempo","valence")])
+
+
+# cross tab for categorical features
+# row relative frequencies
+table(music.songs$genre, music.songs$mode) %>% prop.table(1) %>% round(2)
+
+table(music.songs$genre, music.songs$key) %>% prop.table(1) %>% round(2)
+
+######################  visualizing data #################################
+
+
+#quickly make histograms of all numeric variables 
+music.songs.num <- subset(music.songs, select=c("popularity","acousticness",
+                                                "danceability","duration_ms","energy",
+                                                "instrumentalness","liveness","loudness",
+                                                "speechiness","tempo","valence")) 
+
+# Apply pivot_longer function 
+# to stack all the data into two columns, feature & value 
+music.long <- music.songs.num %>%  
+  tidyr::pivot_longer(colnames(music.songs.num)) %>% 
+  as.data.frame()
+head(music.long)                         
+
+# Draw histogram for each feature
+p1 <- ggplot(music.long, aes(x = value)) +    
+  geom_histogram() + 
+  facet_wrap(~ name, scales = "free")
+p1
+
+rm(music.songs.num)
+rm(music.long)
+rm(p1)
+
+
+# grouped box plots for numeric features by genre to examine 
+# how Classical music compares to other genres 
+
+# acousticness 
+b1 <- ggplot(music.songs, aes(x=genre, y=acousticness, color=genre)) + 
+  geom_boxplot() + coord_flip()
+# danceability 
+b2 <- ggplot(music.songs, aes(x=genre, y=danceability, color=genre)) + 
+  geom_boxplot() + coord_flip()
+# energy
+b3 <- ggplot(music.songs, aes(x=genre, y=energy, color=genre)) + 
+  geom_boxplot() + coord_flip()
+# instrumentalness
+b4 <- ggplot(music.songs, aes(x=genre, y=instrumentalness, color=genre)) + 
+  geom_boxplot() + coord_flip()
+# liveness
+b5 <- ggplot(music.songs, aes(x=genre, y=liveness, color=genre)) + 
+  geom_boxplot() + coord_flip()
+# loudness
+b6 <- ggplot(music.songs, aes(x=genre, y=loudness, color=genre)) + 
+  geom_boxplot() + coord_flip()
+# popularity
+b7 <- ggplot(music.songs, aes(x=genre, y=popularity, color=genre)) + 
+  geom_boxplot() + coord_flip()
+# speechiness
+b8 <- ggplot(music.songs, aes(x=genre, y=speechiness, color=genre)) + 
+  geom_boxplot() + coord_flip()
+# tempo 
+b9 <- ggplot(music.songs, aes(x=genre, y=tempo, color=genre)) + 
+  geom_boxplot() + coord_flip()
+# valence
+b10 <- ggplot(music.songs, aes(x=genre, y=valence, color=genre)) + 
+  geom_boxplot() + coord_flip()
+
+gridExtra::grid.arrange(b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, nrow = 5)
+######################  feature correlations  ###############################
+
+library(corrplot)
+library(corrgram)
+
+# correlations
+cor.data <- stats::cor(music.songs[ ,c("popularity","acousticness",
+                                "danceability","duration_ms","energy",
+                                "instrumentalness","liveness","loudness",
+                                "speechiness","tempo","valence") ])
+
+print(cor.data)
+
+corrplot(cor.data,method='number')
+
+rm(cor.data)
+
+############ saving out only data that will be used in analyses ###############  
+
+music <- subset(music.songs, select=c("id","popularity","acousticness","danceability",
+                                "duration_ms","energy","instrumentalness",
+                                "liveness","loudness", "speechiness",
+                                "tempo","valence", "key", "mode","genre","music_genre"))
+
+rm(music.songs)
+
+######################  create train & test data sets  ######################
+library(caret) # short for Classification And Regression Training
+
+# Setting a random seed so all results are reproducible
+set.seed(123) 
+
+# If the y argument to this function is a factor, 
+# the random sampling occurs within each class and should preserve the overall 
+# class distribution of the data.
+train.index <- caret::createDataPartition(music$genre, p = .7, list = FALSE, times = 1)
+
+# Training Data
+train = music[ train.index,]
+# Testing Data
+test = music[-train.index,]
+
+rm(music)
+rm(train.index)
+
+############### Standardize numeric variables in training set  ################
+
+# save out mean and sd from training data to use for z-scoring
+# both train and test data sets 
+
+zscore.train <- caret::preProcess(train[,c(2:12)], method = c("center", "scale"))
+train.z <-predict(zscore.train, train[, c(2:12)])
+test.z <-predict(zscore.train, test[, c(2:12)])
+
+#gather all variables back together
+train <-train[, c(1,13:16)]
+test <- test[, c(1,13:16)]
+train.z <- cbind(train,train.z)
+test.z <- cbind(test, test.z)
+
+psych::describe(train.z, check=TRUE)
+
+rm(train)
+rm(test)
+rm(zscore.train)
+################  looking at data using logistic regression ################
+
+#Logistic Regression
+# including all predictors/features 
+model1<- stats::glm( genre ~  popularity + acousticness +
+                       danceability + duration_ms + energy +
+                       instrumentalness + liveness + loudness +
+                       speechiness + tempo + valence + key + mode, 
+             data=train.z, family = binomial(link = 'logit'))
+
+summary(model1)
+
+# Predict the probability (p) of Classical music correct classification
+probabilities <- predict(model1, type = "response")
+
+# Subset numeric columns with dplyr for plotting
+train.num <- subset(train.z, select=c("popularity","acousticness",
+                       "danceability","duration_ms","energy",
+                       "instrumentalness","liveness","loudness",
+                       "speechiness","tempo","valence"))          
+
+predictors <- colnames(train.num)
+
+# Bind the logit and tidying the data for plotting
+train.num <- train.num %>%
+  dplyr::mutate(logit = log(probabilities/(1-probabilities))) %>%
+  tidyr::gather(key = "predictors", value = "predictor.value", -logit)
+
+# plot the features against the log odds
+ggplot(train.num, aes(logit, predictor.value))+
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "loess") + 
+  theme_bw() + 
+  facet_wrap(~predictors, scales = "free_y")
+
+
+#####################################################################
+
+library(pROC)
+library(PRROC)
+
+#sort data sets by classes so that Classical is read in as the positive case
+train <- train.z[order(-as.numeric(train.z$genre)),]
+test <- test.z[order(-as.numeric(test.z$genre)),]
+
+
+ctrl <- caret::trainControl(method="repeatedcv", number=10, repeats = 5, 
+                            summaryFunction = prSummary ,  # saving precision & recall info
+                            classProbs = TRUE, savePredictions = TRUE)
+
+# started out with tuneLength=20 to get model to try 20 different 'default' values for k
+knn.model1 <- caret::train(genre ~ popularity + 
+                             danceability + duration_ms + energy +
+                             instrumentalness + liveness + 
+                             speechiness + tempo + valence, 
+                           data = train, method = "knn", tuneLength=30,
+                           trControl = ctrl, metric = "AUC")
+plot(knn.model1)
+
+
+c("popularity",
+  "danceability","duration_ms","energy",
+  "instrumentalness","liveness",
+  "speechiness","tempo","valence")
+
+
+# evaluating AUPRC in test set
+# caret works a bit differently with predict()
+# so need to gather model results for plotting
+testm1=cbind(test[,c("genre")], 
+             predict(knn.model1,test[,c("popularity",
+                              "danceability","duration_ms","energy",
+                              "instrumentalness","liveness",
+                              "speechiness","tempo","valence")],type="prob"),
+             predict(knn.model1,test[,c("popularity",
+                                        "danceability","duration_ms","energy",
+                                        "instrumentalness","liveness",
+                                        "speechiness","tempo","valence")]))
+
+
+names(testm1)=c("obs","Classical","Other","pred")
+testm1$obs <- as.factor(testm1$obs)
+str(testm1)
+
+confusionMatrix(data = testm1$pred, reference = testm1$obs, mode = "prec_recall")
+
+pred_obj <- ROCR::prediction(testm1$Classical, ifelse(testm1$obs == "Classical", 1, 0))
+perf_obj <- ROCR::performance(pred_obj, measure = "prec", x.measure = "rec")
+
+#need to compare this curve to the one directly output by MLmetrics 
+ROCR::plot(perf_obj, ylim = c(0,1))
+
+```
+
