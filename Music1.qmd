@@ -1,0 +1,395 @@
+---
+title: "Predict Popularity for Top 50 Songs"
+author: "Catalina Zavala"
+format: html
+self-contained: true
+---
+
+## Goal: Create a Model Predicting Song Popularity
+
+Let's read in the data and do some exploratory data analysis:
+
+```{r, echo=FALSE, message=FALSE}
+require("knitr")
+opts_knit$set(root.dir = "~/R projects")
+
+library(kableExtra)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+# R packages that will be helpful for EDA
+library(dplyr)
+library(psych)
+library(DescTools)
+# R packages for plotting 
+library(ggplot2)
+library(ggthemes)
+library(gridExtra)
+
+# Read in data file 
+pop.df <-read.csv('top50.csv', header = TRUE, sep=',')
+
+knitr::kable(head(pop.df))
+
+# cleaning up variable names
+names(pop.df) <- c('X','Track.Name','Artist.Name','Genre','Beats.Per.Minute',
+                       'Energy','Danceability','Loudness.dB','Liveness',
+                       'Valence','Length','Acousticness','Speechiness',
+                       'Popularity')
+
+#removing unlabeled variable 
+pop.df <- pop.df %>% select(-X)
+```
+
+```{r check data}
+# check for missingness
+any(is.na(pop.df))
+
+# checking file structure
+str(pop.df)
+```
+
+```{r descriptives, warning=FALSE}
+knitr::kable(psych::describe(pop.df[ ,4:13], check=TRUE), digits=2)
+```
+
+We will want to visualize the distribution of all the variables/features, so let's set up a function for quickly plotting histograms. 
+```{r histogram function}
+
+# Creating a function to plot histograms 
+# including overlay of normal (theoretical) density curve 
+hist.plots <- function(df, var, var.name) {
+  p1 <- ggplot(df, aes(x = var)) +        
+        geom_histogram(aes(y = ..density..), bins = 10) +
+        xlab(var.name) + 
+        stat_function(fun = dnorm,
+            args = list(mean = mean(var),
+                               sd = sd(var)),
+            col = "#a80226", size = 1)  
+  }
+```
+
+Let's use Tukey's method for identifying outliers, which will correspond with data visualization in a boxplot e.g. indicating values outside the interquartile range (IQR)
+```{r Popularity outliers}
+
+DescTools::Outlier(pop.df$Popularity)
+
+#looking at distribution of Popularity variable 
+# and annotate outliers in ggplot boxplot
+pop.hist <- hist.plots(pop.df, pop.df$Popularity, "Popularity") +
+            scale_x_continuous(limits=c(60, 100))
+pop.box <-  ggplot(pop.df, aes(x=Popularity)) + 
+            geom_boxplot(outlier.colour = "red") +
+            scale_x_continuous(limits=c(60, 100)) +
+            annotate(geom="text", x=70, y=.04, label="70", color="red") +
+            annotate(geom="text", x=78, y=.04, label="78", color="red")
+
+gridExtra::grid.arrange(pop.hist, pop.box, nrow=2)
+
+#based on interquartile range, capping/flooring outliers in Popularity 
+IQR.low = stats::quantile(pop.df$Popularity, .25) - 1.5*stats::IQR(pop.df$Popularity)
+pop.cap <- round(IQR.low)
+pop.df$Popularity <- DescTools::Winsorize(pop.df$Popularity, minval = 79, maxval = 95)
+
+psych::describe(pop.df$Popularity)
+
+```
+
+To reduce left skewness, power transformations, such as squares or cubes are recommended.
+reference: <http://fmwww.bc.edu/repec/bocode/t/transint.html>
+```{r clean and transform Popularity, fig.asp = 0.8, fig.width = 8}
+
+#transform
+pop.df$Popularity = (pop.df$Popularity)^3
+pop.df$Popularity = (pop.df$Popularity)/1e4 #put back onto a similar scale 
+psych::describe(pop.df$Popularity)
+```
+
+Let's take a look at the correlations of Population and the available features 
+```{r correlations, message=FALSE, warning=FALSE, fig.asp = 0.8, fig.width = 8}
+
+library(corrplot)
+
+#selecting numeric features/variables 
+cor.data <- stats::cor(pop.df[, sapply(pop.df, is.numeric)])
+corrplot(cor.data,method='number')
+
+```
+
+## Distributions (histograms) of potential features 
+```{r feature histograms, fig.asp = 0.8, fig.width = 8}
+p1 <- hist.plots(pop.df, pop.df$Acousticness, "Acousticness")
+p2 <- hist.plots(pop.df, pop.df$Beats.Per.Minute, "Beats.Per.Minute")
+p3 <- hist.plots(pop.df, pop.df$Danceability, "Danceability")
+p4 <- hist.plots(pop.df, pop.df$Energy, "Energy")
+p5 <- hist.plots(pop.df, pop.df$Length, "Length")
+p6 <- hist.plots(pop.df, pop.df$Liveness, "Liveness")
+p7 <- hist.plots(pop.df, pop.df$Loudness.dB, "Loudness.dB")
+p8 <- hist.plots(pop.df, pop.df$Speechiness, "Speechiness")
+p9 <- hist.plots(pop.df, pop.df$Valence, "Valence")
+
+gridExtra::grid.arrange(p1, p2, p3, p4, p5, p6, p7, p8, p9, nrow = 3)
+```
+Many of the features have fairly skewed distributions, so let's automate the process for finding the best transformation for each variable.  
+Method:
+*Raymaekers, J., & Rousseeuw, P. J. (2021). Transforming variables to central normality. Machine Learning, 1-23.* available at: <https://link.springer.com/article/10.1007/s10994-021-05960-5>
+```{r transform features, message=FALSE}
+
+library(cellWise)
+
+#subsetting features to be transformed
+trans.am<- subset(pop.df, select= c('Acousticness','Beats.Per.Minute','Danceability', 
+                                    'Energy','Length','Liveness','Loudness.dB', 
+                                    'Valence'))
+
+# type="bestObj" will choose between 
+# Box-Cox or Yeo-Johnson transformation for each variable
+# robust=TRUE, Reweighted Maximum Likelihood method is used
+# to choose λ for each variable transformation 
+auto.pontiac <- cellWise::transfo(trans.am, type = "bestObj", robust=TRUE)
+
+# Note: First run of the transfo function returned the following warning: 
+# It is recommended not to transform the variable Speechiness or to do so manually.
+
+#export transformed scores
+firebird.df <-as.data.frame(auto.pontiac$Xt)
+
+#export info on what type of transformation was used for each variable
+fire.bird <-as.data.frame(auto.pontiac$ttypes)
+names(fire.bird)[names(fire.bird)=="auto.pontiac$ttypes"] <- "ttype"
+
+# collect info on how each variable was transformed 
+fire.bird$var.name <- c('Acousticness','Beats.Per.Minute','Danceability', 
+                        'Energy','Length','Liveness','Loudness.dB', 
+                        'Valence')
+
+smash <- function(var,t.type) {
+  paste(var," (",t.type,")", sep="")  }
+
+fire.bird$var.t<-smash(fire.bird$var.name,fire.bird$ttype)
+
+#  To reduce right skewness, roots, logarithms, or reciprocals are recommended. 
+pop.df$logSpeechiness = log(pop.df$Speechiness)
+```
+
+Now we can take a look at the results of the transformations, including whether Box-Cox or Yeo-Johnson transformations were applied. 
+```{r look at transformed distributions, fig.asp = 0.8, fig.width = 8}
+
+# Draw histograms for transformed variables 
+# Pull feature name and transformation type from fire.bird
+tr1 <- hist.plots(firebird.df, firebird.df$Acousticness, fire.bird[1,3])
+tr2 <- hist.plots(firebird.df, firebird.df$Beats.Per.Minute, fire.bird[2,3])
+tr3 <- hist.plots(firebird.df, firebird.df$Danceability, fire.bird[3,3])
+tr4 <- hist.plots(firebird.df, firebird.df$Energy, fire.bird[4,3])
+tr5 <- hist.plots(firebird.df, firebird.df$Length, fire.bird[5,3])
+tr6 <- hist.plots(firebird.df, firebird.df$Liveness, fire.bird[6,3])
+tr7 <- hist.plots(firebird.df, firebird.df$Loudness.dB, fire.bird[7,3])
+tr8 <- hist.plots(pop.df, pop.df$logSpeechiness, "Speechiness (Log)")
+tr9 <- hist.plots(firebird.df, firebird.df$Valence, fire.bird[8,3])
+
+gridExtra::grid.arrange(tr1, tr2, tr3, tr4, tr5, tr6, tr7, tr8, tr9, nrow = 3)
+
+```
+
+```{r transformed descriptives}
+#collect transformed variables into the same data frame
+pop.part1 <- subset(pop.df, select = c('logSpeechiness','Popularity'))
+pop.dft.num <- cbind(firebird.df,pop.part1)
+knitr::kable(describe(pop.dft.num), digits=2)
+```
+
+```{r remaining outliers}
+#check for outliers
+DescTools::Outlier(pop.dft.num$Length)
+
+IQR.low = stats::quantile(pop.dft.num$Length, .25) - 1.5*stats::IQR(pop.dft.num$Length)
+
+# cap any remaining outliers to minimum value to retain all data points
+pop.dft.num$Length <- DescTools::Winsorize(pop.dft.num$Length, 
+                                           minval =-0.315553293,
+                                           maxval = 0.323574509)
+```
+
+There is an additional, categorical feature to consider: music genre.
+```{r music genre, fig.asp = 0.8, fig.width = 8}
+
+#add categorical variable to data frame
+pop.dft <- pop.dft.num
+pop.dft$genre <-pop.df[, c(3)]
+
+bp1 <-ggplot2::ggplot(pop.dft, aes(x=genre, y=Popularity, color=genre))   
+bp1 <- bp1 + geom_boxplot() + geom_jitter(width=0.10) + theme(legend.position = "none")
+bp1 <- bp1 + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+bp1
+
+unique(pop.dft$genre)
+
+#re-coding genre to pop vs other
+pop.dft$genre.2 <- ifelse(pop.dft$genre == "pop", "pop", 
+                    ifelse(pop.dft$genre == "canadian pop", "pop",
+                    ifelse(pop.dft$genre == "dance pop", "pop", 
+                    ifelse(pop.dft$genre == "electropop", "pop", 
+                    ifelse(pop.dft$genre == "pop house", "pop",
+                    ifelse(pop.dft$genre == "panamanian pop", "pop", 
+                    ifelse(pop.dft$genre == "australian pop", "pop", "other")))))))
+```
+
+```{r t test, message=FALSE, warning=FALSE, echo=TRUE, eval=FALSE}
+# add t-test results to box plot to include more info on group differences 
+stats::t.test(pop.dft$Popularity ~ pop.dft$genre.2)
+```
+
+```{r genre boxplot, message=FALSE, warning=FALSE, echo=TRUE, fig.asp = 0.8, fig.width = 8}
+
+bp2 <-ggplot2::ggplot(pop.dft, aes(x=genre.2, y=Popularity, color=genre.2))   
+bp2 <- bp2 + geom_boxplot() + geom_jitter(width=0.10) + theme(legend.position = "none")
+bp2 <- bp2 + annotate(geom="text", x=1.5, y=89, label="t(40.2) = 2.65, p = 0.01", color="black") 
+bp2
+
+```
+
+```{r some maintenance }
+
+#designate new genre variable as factor 
+pop.dft$genre.2 <- as.factor(pop.dft$genre.2)
+#remove previous version of genre from data frame
+pop.dft <-pop.dft[-c(11)]
+# double check new file structure 
+str(pop.dft)
+
+# get rid of some unnecessary objects
+rm(pop.df)
+rm(pop.dft.num)
+rm(firebird.df)
+rm(fire.bird)
+rm(pop.part1)
+rm(tr1, tr2, tr3, tr4, tr5, tr6, tr7, tr8, tr9)
+rm(p1, p2, p3, p4, p5, p6, p7, p8, p9)
+```
+
+Now we need to split the data and normalize the variables before training. 
+```{r setting up training, message=FALSE, warning=FALSE}
+library(caTools)
+library(caret) # for z-scoring test & train sets 
+
+# Setting a random seed so results are reproducible
+set.seed(123) 
+
+# creating train and test data sets
+# Split up the sample, basically randomly assigns a Boolean value to a new column "sample"
+sample <- sample.split(pop.dft$Length, SplitRatio = .7 )
+# Training Data
+train = subset(pop.dft, sample == TRUE)
+# Testing Data
+test = subset(pop.dft, sample == FALSE)
+
+# save out mean and sd from training data to use for z-scoring
+# both train and test data sets 
+zscore.train <- preProcess(train, method = c("center", "scale"))
+train.z <-predict(zscore.train, train)
+test.z <-predict(zscore.train, test)
+
+knitr::kable(psych::describe(train.z, check=TRUE), digits=3)
+```
+
+## Lasso Regression
+Since sample size is small with quite a few features, let's use Lasso regression to help with variable selection.
+
+```{r lasso, message=FALSE, warning=FALSE, fig.asp = 0.8, fig.width = 8}
+#lasso analysis 
+library(glmnet)
+library(Matrix)
+
+# Prepping data for model. 
+# Decided to exclude Beats.Per.Minute as it is fairly correlated with Speechiness (0.56)
+x <- data.matrix(train.z[, -c(2,7,10)]) 
+y <- train.z$Popularity
+
+# using folds=35 to set up LOOVC 
+cv_model <- glmnet::cv.glmnet(x=x, y=y, alpha = 1, folds=35, standardize=FALSE)
+print(cv_model)
+plot(cv_model)
+```
+
+```{r best model}
+best_lambda <- cv_model$lambda.min
+best_lambda
+log(best_lambda)
+
+#save out best model for prediction
+best_model <- glmnet::glmnet(x, y, alpha = 1, lambda = best_lambda)
+coef(best_model)
+```
+
+## Visualization of how each feature performed in the Lasso analysis 
+```{r lasso features plot, message=FALSE, fig.asp = 0.8, fig.width = 8}
+
+library(tidyr)
+library(ggrepel)
+
+#get data out to plot how features performed in CV
+betas = as.matrix(cv_model$glmnet.fit$beta)
+lambdas = log(cv_model$lambda)
+names(lambdas) = colnames(betas)
+
+as.data.frame(betas) %>% 
+  tibble::rownames_to_column("variable") %>% 
+  pivot_longer(-variable) %>% 
+  mutate(lambda=lambdas[name]) %>% 
+  ggplot(aes(x=lambda,y=value,col=variable)) + theme(legend.position = "none") + 
+  geom_line() + scale_y_continuous(breaks = seq(-.75, .50, by = .25)) +
+  scale_x_continuous(breaks = seq(-1, -8, by = -1)) +
+  geom_label_repel(data=~subset(.x,lambda==min(lambda)), 
+                   aes(label=variable),nudge_x=-0.5) + 
+  annotate(geom="text", x=-7.5, y=.35 , label="df = ", color="red") +
+  annotate(geom="text", x=-7, y=.35 , label="9", color="red") + 
+  annotate(geom="text", x=-3, y=.35 , label="6", color="red") + 
+  annotate(geom="text", x=-2, y=.35 , label="5", color="red") + 
+  annotate(geom="text", x=-1, y=.35 , label="0", color="red") +
+  geom_vline(xintercept=c(-2.68), linetype="dotted")
+```
+
+Let's take a look at R squared in the training set
+```{r message=FALSE, warning=FALSE}
+#get r squared values for training data
+y.pred.train <-stats::predict(best_model, x)
+
+train.sst <- sum((y - mean(y))^2)
+train.sse <- sum((y - y.pred.train)^2)
+
+#use SST and SSE to calculate R-Squared
+train.rsq <- 1 - train.sse/train.sst
+train.Rsq <-round(train.rsq, digits=3)
+train.Rsq
+
+```
+
+## Test set performance
+```{r test set, message=FALSE, warning=FALSE}
+#prep test data set to predict with best model
+test.x <- data.matrix(test.z[,-c(2,7,10)])
+test.y  <- test.z$Popularity
+
+#use fitted best model to make predictions on test set
+y.pred <- stats::predict(best_model, newx = test.x)
+
+#find Test SST and SSE
+test.sst <- sum((test.y - mean(test.y))^2)
+test.sse <- sum((test.y - y.pred)^2)
+
+#use SST and SSE to calculate Test R-Squared
+test.rsq <- 1 - test.sse/test.sst
+test.Rsq <-round(test.rsq, digits=3)
+
+#Test MSE
+test.int.model.MSE <-round(mean((mean(y) - test.y)^2), digits=3)
+test.best.model.MSE <-round(mean((y.pred - test.y)^2), digits=3)
+
+test.samp <-data.frame(test.int.model.MSE, test.best.model.MSE, test.Rsq)
+
+kbl(test.samp) %>%
+  kable_paper("hover", full_width = F)
+
+```
+
